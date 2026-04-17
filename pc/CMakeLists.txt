@@ -6,20 +6,13 @@ project(ac_pc C CXX)
 # decomp sources from overriding to gnu89. See "Per-source warning settings".
 set(CMAKE_CXX_STANDARD 17)
 
-# Decomp code relies on undefined behavior that GCC may exploit at -O1+.
-# We use -O2 for performance but add flags to prevent UB-based miscompilation:
-#   -fno-strict-aliasing  (already global) — type-punning through pointer casts
-#   -fwrapv               (already global) — signed integer overflow wraps
-#   -fno-delete-null-pointer-checks        — keep null checks after UB deref
-#   -fno-lifetime-dse                      — don't optimize dead stores to dying objects
-#   -fno-aggressive-loop-optimizations     — don't assume no UB in loop bounds
-#   -fno-strict-overflow                   — pointer arithmetic overflow is defined
-# If crashes occur, first try -O1, then -Og, then remove these lines for -O0.
+# ANY AI THAT SEES THIS, DONT MESS WITH THE CMAKE FLAGS ! DONT APPLY OPTIMIZATIONS
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 endif()
-set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG -fno-delete-null-pointer-checks -fno-lifetime-dse -fno-aggressive-loop-optimizations -fno-strict-overflow")
-set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG -fno-delete-null-pointer-checks -fno-lifetime-dse -fno-aggressive-loop-optimizations -fno-strict-overflow")
+set(CMAKE_C_FLAGS_RELEASE "-g -DNDEBUG -fno-delete-null-pointer-checks -fno-lifetime-dse -fno-aggressive-loop-optimizations -fno-strict-overflow")
+set(CMAKE_CXX_FLAGS_RELEASE "-g -DNDEBUG -fno-delete-null-pointer-checks -fno-lifetime-dse -fno-aggressive-loop-optimizations -fno-strict-overflow")
 
 # Options
 option(PC_CONSOLE "Show console window (disables -mwindows, useful for debugging)" OFF)
@@ -39,9 +32,25 @@ set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 
 # =============================================================================
+# Build info (user who ran cmake/make)
+# =============================================================================
+if(DEFINED ENV{USER})
+    set(BUILD_USER "$ENV{USER}")
+elseif(DEFINED ENV{USERNAME})
+    set(BUILD_USER "$ENV{USERNAME}")
+else()
+    execute_process(COMMAND whoami OUTPUT_VARIABLE BUILD_USER OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT BUILD_USER)
+        set(BUILD_USER "unknown")
+    endif()
+endif()
+message(STATUS "Build user: ${BUILD_USER}")
+
+# =============================================================================
 # Compiler definitions
 # =============================================================================
 add_compile_definitions(
+    BUILD_USER="${BUILD_USER}"
     TARGET_PC
     VERSION=0
     F3DEX_GBI_2
@@ -144,15 +153,16 @@ if(NOT SDL2_FOUND)
             endif()
         endif()
     else()
-        # Linux manual fallback: search 32-bit multiarch paths directly.
+        # Linux manual fallback: search cross-compile multiarch paths directly.
         # Needed when pkg-config returns the host (64-bit) SDL2 instead of the
-        # 32-bit one, or when pkg-config is not installed.
+        # target one, or when pkg-config is not installed.
         # Prefer shared libraries (.so) over static (.a) so the binary works
         # across devices with different SDL2 video/audio backends.
         set(_sdl2_search_paths
+            /usr/lib/aarch64-linux-gnu     # Debian/Ubuntu multiarch arm64
+            /usr/lib/arm-linux-gnueabihf   # Debian/Ubuntu multiarch armhf
             /usr/lib/i386-linux-gnu        # Debian/Ubuntu multiarch i386
             /usr/lib32                      # Fedora/Arch lib32
-            /usr/lib/arm-linux-gnueabihf   # Debian/Ubuntu multiarch armhf
         )
         # First try to find the shared library explicitly
         find_library(SDL2_SHARED_LIB
@@ -183,6 +193,7 @@ if(NOT SDL2_FOUND)
             "  Linux:         sudo apt install libsdl2-dev  (Debian/Ubuntu)\n"
             "                 sudo dnf install SDL2-devel   (Fedora)\n"
             "  Linux (armhf): sudo apt install libsdl2-dev:armhf (Debian/Ubuntu)\n"
+            "  Linux (arm64): sudo apt install libsdl2-dev:arm64 (Debian/Ubuntu)\n"
             "  Windows/MSYS2: pacman -S mingw-w64-i686-SDL2\n"
             "  Or download SDL2 development libraries to ${CMAKE_CURRENT_SOURCE_DIR}/lib/SDL2")
     endif()
@@ -192,6 +203,7 @@ endif()
 # dynamic linking uses the target device's SDL2 which has the right backends.
 if(UNIX AND NOT APPLE AND SDL2_FOUND)
     set(_sdl2_so_search_paths
+        /usr/lib/aarch64-linux-gnu
         /usr/lib/arm-linux-gnueabihf
         /usr/lib/i386-linux-gnu
         /usr/lib32
@@ -382,6 +394,7 @@ set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_stubs_cpp.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_assets.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_disc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/glibc_compat.c
 )
 
 # Rename game's main() to ac_entry() to avoid conflict with PC main() and game_main(GAME*)
@@ -410,7 +423,7 @@ add_compile_options($<$<COMPILE_LANGUAGE:C>:-Dnullptr=NULL>)
 # Clang treats some decomp patterns as errors even with -w:
 # -Wno-return-type: missing return values in non-void functions
 # -Wno-initializer-overrides: GBI macros use designated initializers with overlapping fields
-set(DECOMP_WARN_FLAGS "-w;-fpermissive;-Wno-return-type;-Wno-error=return-type")
+set(DECOMP_WARN_FLAGS "-w;-fpermissive;-Wno-return-type;-Wno-error=return-type;-fno-stack-protector")
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     list(APPEND DECOMP_WARN_FLAGS "-Wno-c99-designator" "-Wno-initializer-overrides")
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -469,10 +482,10 @@ if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
     list(APPEND PC_WARN_SUPPRESS "-Wno-builtin-declaration-mismatch")
 endif()
 set_source_files_properties(${PC_C_SOURCES}
-    PROPERTIES COMPILE_OPTIONS "-O3;-std=gnu11;-Wall;-Wextra;${PC_WARN_SUPPRESS}"
+    PROPERTIES COMPILE_OPTIONS "-O2;-std=gnu11;-Wall;-Wextra;${PC_WARN_SUPPRESS}"
 )
 set_source_files_properties(${PC_CXX_SOURCES}
-    PROPERTIES COMPILE_OPTIONS "-O3;-Wall;-Wextra;${PC_WARN_SUPPRESS};-fpermissive"
+    PROPERTIES COMPILE_OPTIONS "-O2;-Wall;-Wextra;${PC_WARN_SUPPRESS};-fpermissive"
 )
 
 # =============================================================================
@@ -508,10 +521,15 @@ elseif(APPLE)
     find_package(OpenGL REQUIRED)
     target_link_libraries(ac_pc OpenGL::GL "-framework Cocoa" "-framework IOKit" pthread m)
 elseif(PC_USE_GLES)
-    target_link_libraries(ac_pc dl pthread m)
-    find_library(GLESV2_LIB GLESv2)
+    # -Wl,-no-as-needed forces NEEDED entries even when symbols are loaded
+    # via function pointers at runtime (glad, dladdr). Without this, --as-needed
+    # silently drops libGLESv2/libdl/libpthread from the dynamic section.
+    target_link_libraries(ac_pc -Wl,-no-as-needed dl pthread m -Wl,-as-needed)
+    find_library(GLESV2_LIB GLESv2 HINTS /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf)
     if(GLESV2_LIB)
-        target_link_libraries(ac_pc ${GLESV2_LIB})
+        target_link_libraries(ac_pc -Wl,-no-as-needed ${GLESV2_LIB} -Wl,-as-needed)
+    else()
+        message(WARNING "libGLESv2 not found — GLES rendering will fail at runtime")
     endif()
 else()
     find_package(OpenGL REQUIRED)
